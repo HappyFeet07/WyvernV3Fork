@@ -179,6 +179,7 @@ const CHAIN_ID = 50
 module.exports = {
   hashOrder,
   hashToSign,
+  structToSign,
   increaseTime,
   assertIsRejected,
   wrap,
