@@ -1,7 +1,7 @@
 const { ethers, waffle } = require("hardhat");
 const { expect, use } = require("chai");
 
-describe.only("WyvernRegistry", () => {
+describe("WyvernRegistry", () => {
 
   let owner, user1, user2;
   let Registry, registry;
@@ -10,6 +10,13 @@ describe.only("WyvernRegistry", () => {
 
   const timeForward = async (n) => {
     await ethers.provider.send('evm_increaseTime', [n]);
+    blockForward(1);
+  }
+
+  const blockForward = async (n) => {
+    for (let i = 0; i < n; i++) {
+      await ethers.provider.send('evm_mine', []);
+    }
   }
 
   beforeEach(async () => {
@@ -24,7 +31,7 @@ describe.only("WyvernRegistry", () => {
     erc20 = await ERC20.connect(owner).deploy();
 
     await registry.deployed();
-    await registry.grantInitialAuthentication(exchange.address);
+    await registry.grantInitialAuthentication(user1.address);
     await registry.connect(user1).registerProxy();
     await erc20.deployed();
   })
@@ -109,10 +116,10 @@ describe.only("WyvernRegistry", () => {
   })
 
   it("allows start but not end of authentication process", async () => {
-    await registry.startGrantAuthentication(user1.address);
-    const timestamp = await registry.pending(user1.address);
+    await registry.startGrantAuthentication(user2.address);
+    const timestamp = await registry.pending(user2.address);
     expect(timestamp.toNumber()).to.gt(0);
-    expect(registry.endGrantAuthentication(user1.address)).to.be.revertedWith("Contract is no longer pending or has already been approved by registr");
+    expect(registry.endGrantAuthentication(user2.address)).to.be.revertedWith("Contract is no longer pending or has already been approved by registry");
   })
 
   it("does not allow start twice", async () => {
@@ -120,13 +127,71 @@ describe.only("WyvernRegistry", () => {
   })
 
   it("does not allow end without start", async () => {
-    expect(registry.endGrantAuthentication(user1.address)).to.be.revertedWith("Contract is no longer pending or has already been approved by registr");
+    expect(registry.endGrantAuthentication(user1.address)).to.be.revertedWith("Contract is no longer pending or has already been approved by registry");
   })
 
-  /*it("allows end after time has passed", async () => {
-    await registry.startGrantAuthentication(user1.address);
-    let time
-  })*/
+  it("allows end after time has passed", async () => {
+     
+    await registry.startGrantAuthentication(owner.address);
+    await timeForward(86400 * 7 * 3 * 10000);
+    await registry.endGrantAuthentication(owner.address);
+    let result = await registry.contracts(owner.address);
+    expect(result).to.be.true;
+    await registry.revokeAuthentication(owner.address);
+    result = await registry.contracts(owner.address);
+    expect(result).to.be.false;
+  })
 
+  it("allows proxy registration for another user", async () => {
+    await registry.registerProxyFor(owner.address);
+    const proxy = await registry.proxies(owner.address);
+    expect(proxy.length).to.gt(0);
+  })
+
+  it("does not allow proxy registration for another user if a proxy already exists", async () => {
+    expect(registry.registerProxy(user1.address)).to.be.revertedWith("User already has a proxy");
+  })
+
+  it("does not allow proxy transfer from another account", async () => {
+    const proxy = await registry.proxies(user2.address);
+    expect(registry.transferAccessTo(proxy, user2.address)).to.be.revertedWith("Proxy transfer can only be called by the proxy");
+  })
+
+  it("does not allow proxy transfer from another account", async () => {
+    let proxy = await registry.proxies(user2.address);
+    expect(registry.transferAccessTo(proxy, user2.address)).to.be.revertedWith("Proxy transfer can only be called by the proxy");
+  })
+
+  it("allows proxy revocation", async () => {
+    const proxy = await registry.proxies(user1.address);
+    const contract = await ethers.getContractAt("TestAuthenticatedProxy", proxy);
+    await contract.connect(user1).setRevoke(true);
+    expect(await contract.revoked()).to.be.true;
+  })
+
+  it("does not allow revoke from another account", async () => {
+    const proxy = await registry.proxies(user2.address);
+    const contract = await ethers.getContractAt("AuthenticatedProxy", proxy);
+    expect(contract.connect(user1).setRevoke(true)).to.be.revertedWith("Authenticated proxy can only be revoked by its user");
+  })
+
+  it("should not allow proxy reinitialization", async () => {
+    const proxy = await registry.proxies(owner.address);
+    const contract = await ethers.getContractAt("AuthenticatedProxy", proxy);
+    expect(contract.connect(owner).initialize(registry.address, registry.address)).to.be.revertedWith("Should not have succeeded");
+  })
+
+  it("allows delegateproxy owner change, but only from owner", async () => {
+    const proxy = await registry.proxies(user1.address);
+    const testProxy = await (await ethers.getContractFactory("TestAuthenticatedProxy")).deploy();
+    let user = await (await ethers.getContractAt("AuthenticatedProxy", proxy)).user();
+    expect(user).to.eq(user1.address);
+    const iface = new ethers.utils.Interface(["function setUser(address newUser)"]);
+    const call = iface.encodeFunctionData("setUser", [user2.address]);
+    expect(testProxy.connect(user2).proxyAssert(testProxy.address, 1, call)).to.be.revertedWith("Authenticated proxy can only be called by its user, or by a contract authorized by the registry as long as the user has not revoked access");
+    //  await testProxy.connect(owner).proxyAssert(testProxy.address, 1, call);
+    //  user = await testProxy.user();
+    //  expect(user).to.eq(user2.address);
+  })
 
 })
